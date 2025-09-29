@@ -10,4 +10,4 @@ REGRAS:
 
 FORMATO:
 - Resposta direta primeiro.
-- Se útil, conclua com: “Se precisar, posso escalar ao time responsável.” 
+- Se útil, conclua com: “Se precisar,  posso escalar ao time responsável.” 
