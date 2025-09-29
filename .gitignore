@@ -1,1 +1,61 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.pyo
+
+# Ambientes virtuais / build
+.venv/
+venv/
+env/
+ENV/
+.eggs/
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+.wheels/
+
+# Testes / ferramentas
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs e temporários
+*.log
+*.tmp
+
+# Variáveis de ambiente (NUNCA comitar)
 .env
+.env.*
+!.env.example   # mantenha um exemplo sem segredos
+
+# ---- Regras específicas do projeto ----
+# Dados locais (PDFs/TXT etc.) não versionar
+data/*
+!data/.gitkeep   # mantém a pasta vazia no repo
+
+# (Opcional) se tiver chaves/prompts sensíveis:
+prompts/*secrets*.*
+
+# Fim
