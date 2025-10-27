@@ -28,12 +28,20 @@ with open("./prompts/system_prompt.txt", "r", encoding="utf-8") as f:
 app = Flask(__name__)
 
 # ---------- Helpers ----------
-def xml_escape(s: str) -> str:
-    return html.escape(s or "", quote=True)
-
 def clamp(s: str, max_chars: int = 1500) -> str:
     s = (s or "").strip()
     return s[:max_chars]
+
+def xml_escape(s: str) -> str:
+    return html.escape(s or "", quote=True)
+
+def twiml_text(text: str) -> Response:
+    """Gera TwiML com header correto e texto escapado/limitado."""
+    safe = xml_escape(clamp(text))
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
+    resp = Response(xml)
+    resp.headers["Content-Type"] = "text/xml; charset=utf-8"
+    return resp
 
 def _norm(s: str) -> str:
     if not s:
@@ -42,10 +50,19 @@ def _norm(s: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return s.lower()
 
-def twiml_text(text: str) -> Response:
-    safe = xml_escape(clamp(text))
-    tw = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
-    return Response(tw, mimetype="text/xml")
+def ask_llm_with_deadline(messages, deadline_sec: int = 10):
+    """Chama o LLM e devolve None se passar do prazo ou der erro."""
+    start = time.time()
+    try:
+        ans = chat(messages)
+    except Exception:
+        print("!! LLM ERROR:\n", traceback.format_exc())
+        return None
+    if time.time() - start > deadline_sec:
+        print("!! LLM deadline estourado (soft timeout).")
+        return None
+    ans = (ans or "").strip()
+    return ans or None
 
 FALLBACK_NO_BASE = "No momento, o FAQ não está carregado."
 NOT_REGISTERED_MSG = (
@@ -325,24 +342,19 @@ def chat_local():
         return jsonify({"answer": clamp(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)})
 
     # 4) FAQ obrigatório (modelo deve retornar conteúdo da base ou CONHECIMENTO_INSUFICIENTE)
-    try:
-        answer = chat([
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content":
-                f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
-                f"[PERGUNTA]\n{question}\n\n"
-                "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE."
-            }
-        ])
-    except Exception:
-        print("!! LLM ERROR /chat:\n", traceback.format_exc())
+    answer = ask_llm_with_deadline([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
+            f"[PERGUNTA]\n{question}\n\n"
+            "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE."
+        }
+    ])
+    if not answer or "conhecimento_insuficiente" in _norm(answer):
         set_pending("local", scope.get("role_hint"))
         return jsonify({"answer": clamp(DONT_KNOW_YET_MSG)})
 
-    if not answer or not answer.strip() or "conhecimento_insuficiente" in _norm(answer):
-        set_pending("local", scope.get("role_hint"))
-        return jsonify({"answer": clamp(DONT_KNOW_YET_MSG)})
-
+    print(">> FINAL ANSWER (local):", answer[:200], "..." if len(answer) > 200 else "")
     return jsonify({"answer": clamp(answer)})
 
 def handle_contact_intent(intent):
@@ -396,6 +408,7 @@ def whatsapp_webhook():
         contacts = fetch_contacts_by_role_like(role_like, limit=10)
         msg = f"Aqui estão os contatos — {role_like}:\n" + format_contacts(contacts)
         pop_pending(from_num)
+        print(">> FINAL ANSWER (contatos follow-up):", msg[:200], "..." if len(msg) > 200 else "")
         return twiml_text(msg)
 
     # usuário não cadastrado
@@ -408,10 +421,14 @@ def whatsapp_webhook():
     if looks_like_contact_request(question):
         intent = detect_contact_intent(question)
         if intent and intent["type"] in ("all", "role"):
-            return twiml_text(handle_contact_intent(intent))
+            msg = handle_contact_intent(intent)
+            print(">> FINAL ANSWER (contatos det):", msg[:200], "..." if len(msg) > 200 else "")
+            return twiml_text(msg)
         sem = semantic_contact_guess(question)
         if sem:
-            return twiml_text(handle_contact_intent(sem))
+            msg = handle_contact_intent(sem)
+            print(">> FINAL ANSWER (contatos sem):", msg[:200], "..." if len(msg) > 200 else "")
+            return twiml_text(msg)
 
     # SCOPE: prioriza FAQ / conteúdo
     scope = classify_scope(question)
@@ -426,26 +443,21 @@ def whatsapp_webhook():
         return twiml_text(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)
 
     # FAQ: obriga usar somente a base; se não encontrar, ativa follow-up
-    try:
-        answer = chat([
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content":
-                f"[IDENTIDADE]\n{user_profile.get('nome','Usuário')}\n\n"
-                f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
-                f"[PERGUNTA]\n{question}\n\n"
-                "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE."
-            }
-        ])
-    except Exception:
-        print("!! LLM ERROR /whatsapp:\n", traceback.format_exc())
+    answer = ask_llm_with_deadline([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"[IDENTIDADE]\n{user_profile.get('nome','Usuário')}\n\n"
+            f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
+            f"[PERGUNTA]\n{question}\n\n"
+            "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE."
+        }
+    ])
+    if not answer or "conhecimento_insuficiente" in _norm(answer):
         set_pending(from_num, scope.get("role_hint"))
+        print(">> FINAL ANSWER (fallback):", DONT_KNOW_YET_MSG)
         return twiml_text(DONT_KNOW_YET_MSG)
 
-    if not answer or not answer.strip() or "conhecimento_insuficiente" in _norm(answer):
-        set_pending(from_num, scope.get("role_hint"))
-        return twiml_text(DONT_KNOW_YET_MSG)
-
-    # resposta normal do FAQ (sem pedir contato)
+    print(">> FINAL ANSWER:", answer[:200], "..." if len(answer) > 200 else "")
     return twiml_text(answer)
 
 # ---------- Start ----------

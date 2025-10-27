@@ -12,10 +12,10 @@ __pycache__/
 *.pyo
 
 # Ambientes virtuais / build
-.venv/
-venv/
-env/
-ENV/
+# .venv/
+# venv/
+# env/
+# ENV/
 .eggs/
 *.egg-info/
 dist/

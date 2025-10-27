@@ -1,0 +1,12 @@
+# OpenRouter
+OPENROUTER_API_KEY=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
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+
+# MySQL
+DB_HOST=localhost
+DB_USER=root
+DB_PASS=mozzinc#
+DB_NAME=Projetos
+
+# Flask
+PORT=8080
