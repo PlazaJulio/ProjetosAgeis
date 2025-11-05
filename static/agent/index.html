@@ -17,19 +17,13 @@
       <div id="status" class="status badge">checando base…</div>
     </header>
 
-    <main id="chat" class="chat">
-      <div class="msg bot">
-        <div class="bubble">
-          Olá! Sou o assistente interno. Pergunte sobre onboarding, setores, benefícios e processos.
-        </div>
-      </div>
-    </main>
+    <!-- a div de mensagens agora usa o ID "messages" -->
+    <main id="messages" class="chat"></main>
 
     <footer class="composer">
-      <!-- IMPORTANTE: button type="button" para não submeter o form -->
-      <form id="chat-form" autocomplete="off">
-        <textarea id="input" rows="1" placeholder="Digite sua mensagem..."></textarea>
-        <button id="send" type="button" aria-label="Enviar">
+      <form id="chatForm" autocomplete="off">
+        <textarea id="chatInput" rows="1" placeholder="Digite sua mensagem..."></textarea>
+        <button id="sendBtn" type="submit" aria-label="Enviar">
           Enviar
         </button>
       </form>

@@ -1,4 +1,6 @@
 (function () {
+  'use strict';
+
   const form = document.getElementById('loginForm');
   const emailEl = document.getElementById('email');
   const passEl  = document.getElementById('password');
@@ -25,14 +27,16 @@
   if (savedTheme === 'light') enableLight();
   else enableDark();
 
-  modeToggle.addEventListener('click', () => {
-    if (document.documentElement.dataset.theme === 'light') enableDark();
-    else enableLight();
-  });
+  if (modeToggle) {
+    modeToggle.addEventListener('click', () => {
+      if (document.documentElement.dataset.theme === 'light') enableDark();
+      else enableLight();
+    });
+  }
 
   function enableLight() {
     document.documentElement.dataset.theme = 'light';
-    modeToggle.textContent = '🌙';
+    if (modeToggle) modeToggle.textContent = '🌙';
     document.documentElement.style.cssText = `
       --bg: #f3f5fb;
       --bg-soft: rgba(10,20,40,0.02);
@@ -48,7 +52,7 @@
   }
   function enableDark() {
     document.documentElement.dataset.theme = 'dark';
-    modeToggle.textContent = '🌙';
+    if (modeToggle) modeToggle.textContent = '🌙';
     document.documentElement.style.cssText = ``; // volta para o :root padrão do CSS
     localStorage.setItem(THEME_KEY, 'dark');
   }
@@ -88,74 +92,77 @@
   }
 
   function setLoading(loading) {
-    submitBtn.disabled = loading;
+    if (submitBtn) submitBtn.disabled = loading;
     if (spinner) spinner.style.display = loading ? 'inline-block' : 'none';
     if (btnText) btnText.textContent = loading ? 'Entrando…' : 'Entrar';
   }
 
   // ----------------- Submit -----------------
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    emailErr.textContent = '';
-    passErr.textContent  = '';
+  if (form) {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      emailErr.textContent = '';
+      passErr.textContent  = '';
 
-    const email = emailEl.value;
-    const senha = passEl.value;
+      const email = emailEl.value;
+      const senha = passEl.value;
 
-    let ok = true;
-    if (!validateEmail(email)) {
-      emailErr.textContent = 'Informe um e-mail válido.';
-      ok = false;
-    }
-    if (!validatePassword(senha)) {
-      passErr.textContent = 'A senha deve ter pelo menos 6 caracteres.';
-      ok = false;
-    }
-    if (!ok) return;
-
-    if (remember && remember.checked) localStorage.setItem(REMEMBER_KEY, email);
-    else localStorage.removeItem(REMEMBER_KEY);
-
-    try {
-      setLoading(true);
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, senha }),
-        mode: 'cors',
-        credentials: 'omit'
-      });
-
-      let data = null;
-      try { data = await res.json(); } catch (_) { data = null; }
-
-      if (!res.ok) {
-        const msg = (data && data.message) || 'Falha no login.';
-        if (data && data.field === 'email') emailErr.textContent = msg;
-        else if (data && data.field === 'senha') passErr.textContent = msg;
-        else showToast(msg, false);
-        return;
+      let ok = true;
+      if (!validateEmail(email)) {
+        emailErr.textContent = 'Informe um e-mail válido.';
+        ok = false;
       }
+      if (!validatePassword(senha)) {
+        passErr.textContent = 'A senha deve ter pelo menos 6 caracteres.';
+        ok = false;
+      }
+      if (!ok) return;
 
-      if (data && data.success) {
-        try { sessionStorage.setItem('onboardly_user', JSON.stringify(data.user)); } catch (_) {}
-        showToast(`Bem-vindo(a), ${data.user?.nome || 'usuário'}!`, true);
+      if (remember && remember.checked) localStorage.setItem(REMEMBER_KEY, email);
+      else localStorage.removeItem(REMEMBER_KEY);
 
-        if (REDIRECT_AFTER_LOGIN) {
-          setTimeout(() => {
-            window.location.replace(REDIRECT_URL);
-          }, 600);
+      try {
+        setLoading(true);
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, senha }),
+          mode: 'cors',
+          credentials: 'omit'
+        });
+
+        let data = null;
+        try { data = await res.json(); } catch (_) { data = null; }
+
+        if (!res.ok) {
+          const msg = (data && data.message) || 'Falha no login.';
+          if (data && data.field === 'email') emailErr.textContent = msg;
+          else if (data && data.field === 'senha') passErr.textContent = msg;
+          else showToast(msg, false);
+          return;
         }
-      } else {
-        showToast((data && data.message) || 'Falha no login.', false);
+
+        if (data && data.success) {
+          try { sessionStorage.setItem('onboardly_user', JSON.stringify(data.user)); } catch (_) {}
+          showToast(`Bem-vindo(a), ${data.user?.nome || 'usuário'}!`, true);
+
+          if (REDIRECT_AFTER_LOGIN) {
+            setTimeout(() => {
+              // usa replace para evitar voltar ao login no histórico
+              window.location.replace(REDIRECT_URL);
+            }, 600);
+          }
+        } else {
+          showToast((data && data.message) || 'Falha no login.', false);
+        }
+      } catch (err) {
+        console.error('Login error:', err);
+        showToast('Não foi possível conectar ao servidor.', false);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error('Login error:', err);
-      showToast('Não foi possível conectar ao servidor.', false);
-    } finally {
-      setLoading(false);
-    }
-  });
+    });
+  }
 
   // ------------- Botões auxiliares -------------
   if (loginSso) {
