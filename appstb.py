@@ -16,9 +16,9 @@ from pdf_ingest import load_knowledge_text
 from llm import chat, parse_agenda_command
 from db import (
     get_user_by_whatsapp,
-    add_event,                        # assinatura: add_event(user_id, descricao, starts_at, ends_at) -> int/bool
-    find_conflicts,                   # assinatura: find_conflicts(user_id, starts_at, ends_at) -> List[...]
-    list_events_for_user_on_date,     # assinatura: list_events_for_user_on_date(user_id, day: date|str) -> List[...]
+    add_event,
+    find_conflicts,
+    list_events_for_user_on_date,
 )
 
 # =========================================================
@@ -26,10 +26,12 @@ from db import (
 # =========================================================
 RAW_KNOWLEDGE_TEXT = load_knowledge_text()
 
+
 def _normalize_base(t: str) -> str:
     lines = [ln.strip() for ln in (t or "").splitlines()]
     lines = [ln for ln in lines if ln]
     return "\n".join(lines)
+
 
 KNOWLEDGE_TEXT = _normalize_base(RAW_KNOWLEDGE_TEXT)
 BASE_IS_EMPTY = (len(KNOWLEDGE_TEXT.strip()) == 0)
@@ -59,15 +61,20 @@ def clamp(s: str, max_chars: int = 1500) -> str:
     s = (s or "").strip()
     return s[:max_chars]
 
+
 def xml_escape(s: str) -> str:
     return html.escape(s or "", quote=True)
 
+
 def twiml_text(text: str) -> Response:
     safe = xml_escape(clamp(text))
-    xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
+    xml = (
+        f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
+    )
     resp = Response(xml)
     resp.headers["Content-Type"] = "text/xml; charset=utf-8"
     return resp
+
 
 def _norm(s: str) -> str:
     if not s:
@@ -75,6 +82,7 @@ def _norm(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return s.lower()
+
 
 def _db_conn():
     return pymysql.connect(
@@ -86,6 +94,7 @@ def _db_conn():
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True,
     )
+
 
 def ask_llm_with_deadline(messages, deadline_sec: int = 10):
     start = time.time()
@@ -99,6 +108,7 @@ def ask_llm_with_deadline(messages, deadline_sec: int = 10):
         return None
     ans = (ans or "").strip()
     return ans or None
+
 
 FALLBACK_NO_BASE = "No momento, o FAQ não está carregado."
 NOT_REGISTERED_MSG = (
@@ -116,11 +126,14 @@ DONT_KNOW_YET_MSG = (
 # ---------- Pequena memória de confirmação por número ----------
 STATE: Dict[str, Dict[str, Any]] = {}  # { from_num: {"awaiting": True, "role_like": str|None, "ts": float} }
 
+
 def set_pending(from_num: str, role_like: str | None):
     STATE[from_num] = {"awaiting": True, "role_like": role_like, "ts": time.time()}
 
+
 def pop_pending(from_num: str):
     return STATE.pop(from_num, None)
+
 
 def get_pending(from_num: str):
     st = STATE.get(from_num)
@@ -129,9 +142,22 @@ def get_pending(from_num: str):
         return None
     return st
 
+
 def is_negative_answer(text: str) -> bool:
     q = _norm(text)
-    return any(token in q for token in ["nao", "não", "nao foi", "não foi", "nao ajudou", "não ajudou", "negativo"])
+    return any(
+        token in q
+        for token in [
+            "nao",
+            "não",
+            "nao foi",
+            "não foi",
+            "nao ajudou",
+            "não ajudou",
+            "negativo",
+        ]
+    )
+
 
 # =========================================================
 # Agenda — utilitários
@@ -140,14 +166,20 @@ def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
     if not dt_str:
         return None
     try:
+        # aceita "YYYY-MM-DDTHH:MM:SS" ou "YYYY-MM-DD HH:MM:SS"
         dt_str = dt_str.replace(" ", "T")
         return datetime.fromisoformat(dt_str)
     except Exception:
         return None
 
+
 def resolve_relative(token: Optional[str]) -> Optional[datetime]:
     """
-    Tokens como RELATIVE:TODAY@10:00 ou RELATIVE:TOMORROW.
+    Converte marcadores como:
+      RELATIVE:TODAY@10:00
+      RELATIVE:TOMORROW
+    em datetime (para @HH:MM assume hoje/amanhã com hora/min).
+    Retorna None se não reconhecido.
     """
     if not token or not isinstance(token, str):
         return None
@@ -160,157 +192,114 @@ def resolve_relative(token: Optional[str]) -> Optional[datetime]:
     if "@" in body:
         day_part, time_part = body.split("@", 1)
         hh, mm = time_part.split(":")
-        hh, mm = int(hh), int(mm)
+        hh = int(hh)
+        mm = int(mm)
     else:
-        day_part, hh, mm = body, 9, 0
+        day_part = body
+        hh, mm = 9, 0  # default 09:00 quando não informado
 
-    base = now if day_part == "TODAY" else (now + timedelta(days=1) if day_part == "TOMORROW" else None)
-    if not base:
+    if day_part == "TODAY":
+        base = now
+    elif day_part == "TOMORROW":
+        base = now + timedelta(days=1)
+    else:
         return None
+
     return datetime(year=base.year, month=base.month, day=base.day, hour=hh, minute=mm)
 
+
 def resolve_agenda_times(parsed: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
+    """
+    Recebe o JSON do parse_agenda_command e devolve start/end como datetime.
+    Se não houver end, assume 60min após start.
+    Resolve também tokens RELATIVE:*.
+    """
     start_raw = parsed.get("start")
     end_raw = parsed.get("end")
+
     start_dt = resolve_relative(start_raw) or parse_iso(start_raw)
     end_dt = resolve_relative(end_raw) or parse_iso(end_raw)
+
     if start_dt and not end_dt:
         end_dt = start_dt + timedelta(minutes=60)
+
     return {"start": start_dt, "end": end_dt}
 
+
 def get_request_user_id() -> Optional[int]:
+    """
+    Recupera o id do usuário logado vindo do front:
+    - Header: X-User-Id
+    - Body JSON: { user_id: ... }
+    """
+    # header
     hdr = request.headers.get("X-User-Id")
     if hdr:
         try:
             return int(hdr)
         except Exception:
             pass
+    # json
     if request.is_json:
-        j = request.get_json(silent=True) or {}
-        if "user_id" in j and j["user_id"] is not None:
-            try:
+        try:
+            j = request.get_json(silent=True) or {}
+            if "user_id" in j and j["user_id"] is not None:
                 return int(j["user_id"])
-            except Exception:
-                pass
+        except Exception:
+            pass
     return None
 
-# =========================================================
-# Contatos — helpers simples (determinísticos)
-# =========================================================
-def _query(sql: str, params=()):
-    conn = _db_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur.fetchall()
-    finally:
-        try: conn.close()
-        except: pass
-
-ROLE_SYNONYMS = [
-    ("marketing", "Marketing"),
-    ("recursos humanos", "Recursos Humanos"),
-    ("rh", "Recursos Humanos"),
-    ("financeiro", "Financeiro"),
-    ("comercial", "Comercial"),
-    ("vendas", "Comercial"),
-    ("administrador de sistemas", "Administrador de Sistemas"),
-    ("admin de sistemas", "Administrador de Sistemas"),
-    ("ti", "Tecnologia"),
-    ("tecnologia", "Tecnologia"),
-]
-CONTACT_TRIGGERS = tuple(_norm(x) for x in ["contato", "contatos", "responsável", "responsavel"])
-CONTACT_SEM_TRIGGERS = tuple(_norm(x) for x in [
-    "contato","contatos","responsavel","responsável","falar com","com quem falar",
-    "quem cuida","quem posta","quem é o responsável","quem e o responsavel"
-])
-
-def looks_like_contact_request(text: str) -> bool:
-    q = _norm(text)
-    return any(t in q for t in CONTACT_SEM_TRIGGERS)
-
-def detect_contact_intent(question: str):
-    q = _norm(question)
-    if not any(t in q for t in CONTACT_TRIGGERS):
-        return None
-    if any(x in q for x in ("todos", "todas", "lista", "listar")):
-        return {"type": "all"}
-    for key_norm, like in ROLE_SYNONYMS:
-        if key_norm in q:
-            return {"type": "role", "like": like}
-    return {"type": "unknown"}
-
-def fetch_contacts_by_role_like(role_like: str, limit: int = 10):
-    like = f"%{role_like}%"
-    sql = (
-        "SELECT u.nome, u.email, u.telefone, c.cargo "
-        "FROM users u JOIN cargos c ON u.role_id = c.role_id "
-        "WHERE u.ativo = 1 AND (c.cargo LIKE %s OR c.grupo_familia LIKE %s) "
-        "ORDER BY c.cargo, u.nome LIMIT %s"
-    )
-    return _query(sql, (like, like, limit))
-
-def fetch_all_contacts(limit: int = 20):
-    sql = (
-        "SELECT u.nome, u.email, u.telefone, c.cargo "
-        "FROM users u JOIN cargos c ON u.role_id = c.role_id "
-        "WHERE u.ativo = 1 ORDER BY c.cargo, u.nome LIMIT %s"
-    )
-    return _query(sql, (limit,))
-
-def format_contacts(contacts):
-    if not contacts:
-        return "Não encontrei contatos para esse perfil no momento."
-    return "\n".join(
-        f"• {c.get('nome','-')} — {c.get('cargo','-')} | {c.get('email','-')} | {c.get('telefone','-')}"
-        for c in contacts
-    )
-
-def handle_contact_intent(intent):
-    if intent["type"] == "all":
-        return "Contatos (até 20):\n" + format_contacts(fetch_all_contacts(limit=20))
-    if intent["type"] == "role":
-        like = intent["like"]
-        return f"Contatos — {like}:\n" + format_contacts(fetch_contacts_by_role_like(like, limit=10))
-    return ("Você pediu contatos, mas não identifiquei o setor/cargo. "
-            "Exemplos: 'contato do administrador de sistemas', 'contatos do RH', 'listar contatos de marketing'.")
 
 # =========================================================
-# Rotas de arquivos estáticos
+# Rotas de arquivos estáticos básicos
 # =========================================================
 @app.get("/")
 def serve_login():
+    # página de login
     return send_from_directory(app.static_folder + "/login", "index.html")
+
 
 @app.get("/static/login/<path:path>")
 def serve_login_assets(path):
     return send_from_directory(app.static_folder + "/login", path)
 
+
 @app.get("/static/agent/<path:path>")
 def serve_agent_assets(path):
     return send_from_directory(app.static_folder + "/agent", path)
+
 
 # =========================================================
 # Rotas utilitárias
 # =========================================================
 @app.get("/healthz")
 def healthz():
-    return jsonify({"status": "ok", "base_loaded": not BASE_IS_EMPTY, "base_chars": len(KNOWLEDGE_TEXT)}), 200
+    return (
+        jsonify(
+            {"status": "ok", "base_loaded": not BASE_IS_EMPTY, "base_chars": len(KNOWLEDGE_TEXT)}
+        ),
+        200,
+    )
+
 
 @app.get("/routes")
 def routes():
-    return jsonify({"ok": True, "routes": ["/", "/healthz", "/chat", "/auth/login", "/webhook/whatsapp"]})
+    return jsonify(
+        {"ok": True, "routes": ["/", "/healthz", "/chat", "/auth/login", "/webhook/whatsapp"]}
+    )
+    
+    
+
 
 # =========================================================
-# CHAT (web)
+# Rota de CHAT (web)
 # =========================================================
 @app.post("/chat")
 def chat_local():
     """
-    JSON: { "body": "<texto>", "user_id": <opcional> }
-    - Intenção AGENDA (create/list)
-    - Intenção CONTATOS (determinística)
-    - Caso contrário, FAQ (PDF)
+    Espera JSON: { "body": "<texto do usuário>", "user_id": <opcional> }
+    Se identificar intenção de AGENDA, executa (criar/listar) usando o user_id.
+    Caso contrário, usa o FAQ (PDF).
     """
     data = request.get_json(force=True)
     question = (data.get("body") or "").strip()
@@ -319,54 +308,60 @@ def chat_local():
     if not question:
         return jsonify({"error": "body vazio"}), 400
 
-    # 0) CONTATOS (rápido/determinístico)
-    if looks_like_contact_request(question):
-        intent = detect_contact_intent(question)
-        if intent:
-            return jsonify({"answer": clamp(handle_contact_intent(intent))})
-
-    # 1) AGENDA
+    # 0) Tenta interpretar AGENDA
     agenda = None
     try:
         agenda = parse_agenda_command(question)
     except Exception:
         agenda = None
 
-    if agenda and agenda.get("action") in {"create", "list"}:
+    if agenda and agenda.get("action") in {"create", "list", "cancel"}:
         if not user_id:
+            # sem usuário logado, não dá pra associar eventos
             return jsonify({"answer": "Para usar a agenda, faça login primeiro."}), 401
 
         action = agenda["action"]
+
+        # Resolver tempos
         times = resolve_agenda_times(agenda)
-        start_dt, end_dt = times["start"], times["end"]
+        start_dt = times["start"]
+        end_dt = times["end"]
         descr = (agenda.get("descricao") or "").strip()
 
         if action == "create":
             if not start_dt or not end_dt or not descr:
-                return jsonify({"answer": "Não entendi data/horário/descrição. Ex.: 'marcar cardiologista dia 15/11 às 16h por 1h'."})
-            # conflito apenas no calendário do usuário (modelo 2)
+                return jsonify(
+                    {
+                        "answer": "Não entendi totalmente data/horário/descrição. Tente: "
+                        "'marcar cardiologista dia 15/11 às 16h por 1h'."
+                    }
+                )
+
+            # verifica conflito apenas no calendário do próprio usuário (modelo 2)
             conflicts = find_conflicts(user_id, start_dt, end_dt)
             if conflicts:
-                lines = []
-                for c in conflicts:
-                    # suporte às duas variantes de colunas, dependendo de como você montou a view/consulta no db
-                    if "data_evento" in c and "hora_inicio" in c:
-                        lines.append(f"• {c['descricao']} — {c['data_evento']} {c['hora_inicio']}-{c.get('hora_fim','')}")
-                    else:
-                        si = c.get("starts_at") or c.get("inicio_utc")
-                        ei = c.get("ends_at")   or c.get("fim_utc")
-                        si_s = si.strftime("%d/%m/%Y %H:%M") if isinstance(si, datetime) else str(si)
-                        ei_s = ei.strftime("%H:%M") if isinstance(ei, datetime) else str(ei)
-                        lines.append(f"• {c.get('descricao','(sem descrição)')} — {si_s}-{ei_s}")
-                return jsonify({"answer": "Você já tem compromisso nesse horário:\n" + "\n".join(lines)})
+                return jsonify(
+                    {
+                        "answer": "Você já tem compromisso nesse horário:\n"
+                        + "\n".join(
+                            f"• {c['descricao']} — {c['data_evento']} {c['hora_inicio']}-{c['hora_fim']}"
+                            for c in conflicts
+                        )
+                    }
+                )
 
             ok = add_event(user_id, descr, start_dt, end_dt)
             if not ok:
                 return jsonify({"answer": "Não consegui salvar o evento agora. Tente novamente."}), 500
 
-            return jsonify({"answer": f"Agendei: **{descr}** em {start_dt.strftime('%d/%m/%Y %H:%M')}–{end_dt.strftime('%H:%M')}."})
+            return jsonify(
+                {
+                    "answer": f"Agendei: **{descr}** em {start_dt.strftime('%d/%m/%Y %H:%M')}–{end_dt.strftime('%H:%M')}."
+                }
+            )
 
         elif action == "list":
+            # se o parser forneceu uma 'date' relativa/ISO, resolvemos
             date_token = agenda.get("date")
             query_day: Optional[date] = None
             if date_token:
@@ -374,6 +369,7 @@ def chat_local():
                 if rel_dt:
                     query_day = rel_dt.date()
                 else:
+                    # tenta ISO simples (YYYY-MM-DD)
                     try:
                         query_day = datetime.fromisoformat(date_token).date()
                     except Exception:
@@ -389,30 +385,29 @@ def chat_local():
 
             lines = []
             for r in rows:
-                if "data_evento" in r and "hora_inicio" in r:
-                    lines.append(f"• {r['descricao']} — {r['data_evento']} {r['hora_inicio']}-{r.get('hora_fim','')}")
-                else:
-                    si = r.get("starts_at") or r.get("inicio_utc")
-                    ei = r.get("ends_at")   or r.get("fim_utc")
-                    si_s = si.strftime("%H:%M") if isinstance(si, datetime) else str(si)[11:16]
-                    ei_s = ei.strftime("%H:%M") if isinstance(ei, datetime) else str(ei)[11:16]
-                    day  = (si.date().strftime("%d/%m/%Y") if isinstance(si, datetime) else str(si)[:10])
-                    lines.append(f"• {r.get('descricao','(sem descrição)')} — {day} {si_s}-{ei_s}")
-
+                lines.append(
+                    f"• {r['descricao']} — {r['data_evento']} {r['hora_inicio']}-{r['hora_fim']}"
+                )
             return jsonify({"answer": f"Seus compromissos em {query_day.strftime('%d/%m/%Y')}:\n" + "\n".join(lines)})
 
-    # 2) FAQ
+        elif action == "cancel":
+            # (Opcional) Implementar um endpoint/DB para delete por id/horário/descrição.
+            return jsonify({"answer": "Cancelamento ainda não está disponível nessa versão."})
+
+    # 1) Fora da agenda -> segue fluxo de FAQ
+    # 1.1) Base não carregada
     if BASE_IS_EMPTY:
         return jsonify({"answer": clamp(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)})
 
+    # 1.2) FAQ obrigatório (somente base)
     answer = ask_llm_with_deadline(
         [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
-                           f"[PERGUNTA]\n{question}\n\n"
-                           "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE.",
+                f"[PERGUNTA]\n{question}\n\n"
+                "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE.",
             },
         ]
     )
@@ -421,8 +416,9 @@ def chat_local():
 
     return jsonify({"answer": clamp(answer)})
 
+
 # =========================================================
-# Webhook WhatsApp (Twilio) — mantém FAQ (pode estender agenda depois)
+# Webhook WhatsApp (Twilio) — inalterado (resumo)
 # =========================================================
 @app.route("/webhook/whatsapp", methods=["POST", "GET"])
 @app.route("/webhook/whatsapp/", methods=["POST", "GET"])
@@ -443,7 +439,7 @@ def whatsapp_webhook():
 
     if request.form:
         question = (request.form.get("Body") or "").strip()
-        from_num = request.form.get("From")
+        from_num = request.form.get("From")  # 'whatsapp:+55...'
     elif request.is_json:
         data = request.get_json(silent=True) or {}
         question = (data.get("Body") or data.get("body") or "").strip()
@@ -455,23 +451,29 @@ def whatsapp_webhook():
     print(">> FROM:", from_num)
     print(">> QUESTION:", question)
 
+    # Usuário não cadastrado
     user_profile = get_user_by_whatsapp(from_num)
     print(">> PROFILE:", user_profile)
     if user_profile is None:
         return twiml_text(NOT_REGISTERED_MSG)
 
+    # (Opcional) Poderíamos integrar a agenda aqui também, usando user_profile['id'].
+    # Para simplificar, o webhook permanece com o fluxo de FAQ original.
+
+    # Base não carregada
     if BASE_IS_EMPTY:
         return twiml_text(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)
 
+    # FAQ
     answer = ask_llm_with_deadline(
         [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": f"[IDENTIDADE]\n{user_profile.get('nome','Usuário')}\n\n"
-                           f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
-                           f"[PERGUNTA]\n{question}\n\n"
-                           "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE.",
+                f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
+                f"[PERGUNTA]\n{question}\n\n"
+                "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE.",
             },
         ]
     )
@@ -480,11 +482,16 @@ def whatsapp_webhook():
 
     return twiml_text(answer)
 
+
 # =========================================================
-# Login simples (sem hash — demo)
+# Login simples (sem hash — uso acadêmico)
 # =========================================================
 @app.post("/auth/login")
 def login():
+    """
+    Autentica o usuário com email e senha (sem hash).
+    Retorna { success, user:{id, nome, email, role_id} }.
+    """
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip()
     senha = (data.get("senha") or "").strip()
@@ -505,17 +512,31 @@ def login():
         print("!! DB ERROR /auth/login:", e)
         return jsonify({"success": False, "message": "Erro interno no servidor."}), 500
     finally:
-        try: conn.close()
-        except: pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     if not user:
         return jsonify({"success": False, "message": "E-mail ou senha inválidos."}), 401
     if not user.get("ativo"):
         return jsonify({"success": False, "message": "Usuário inativo."}), 403
 
-    return jsonify({"success": True, "user": {
-        "id": user["id"], "nome": user["nome"], "email": user["email"], "role_id": user["role_id"]
-    }}), 200
+    return (
+        jsonify(
+            {
+                "success": True,
+                "user": {
+                    "id": user["id"],
+                    "nome": user["nome"],
+                    "email": user["email"],
+                    "role_id": user["role_id"],
+                },
+            }
+        ),
+        200,
+    )
+
 
 # =========================================================
 # Start

@@ -150,23 +150,31 @@ def add_event(
             pass
 
 def find_conflicts(
+    user_id: int,
     starts_at: Union[str, dt.datetime, dt.date],
     ends_at:   Union[str, dt.datetime, dt.date],
     exclude_event_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Retorna eventos que conflitam com o intervalo informado."""
+    """
+    Retorna eventos do MESMO usuário que conflitam com [starts_at, ends_at].
+    Regra de sobreposição: (starts_at < ends_at_evento) AND (ends_at > starts_at_evento)
+    """
     s = _to_dt_str(starts_at)
     e = _to_dt_str(ends_at)
-    params: List[Any] = [s, e, e, s]
+
+    params: List[Any] = [user_id, s, e]
     sql = (
         "SELECT id, user_id, starts_at, ends_at, descricao "
         "FROM agenda "
         "WHERE deleted_at IS NULL "
+        "  AND user_id = %s "
         "  AND ((%s < ends_at) AND (%s > starts_at))"
     )
-    if exclude_event_id:
+
+    if exclude_event_id is not None:
         sql += " AND id <> %s"
         params.append(exclude_event_id)
+
     sql += " ORDER BY starts_at ASC"
     return _query(sql, params)
 
