@@ -360,7 +360,8 @@ def chat_local():
                         lines.append(f"• {c.get('descricao','(sem descrição)')} — {si_s}-{ei_s}")
                 return jsonify({"answer": "Você já tem compromisso nesse horário:\n" + "\n".join(lines)})
 
-            ok = add_event(user_id, descr, start_dt, end_dt)
+            # app.py — dentro do bloco action == "create"
+            ok = add_event(user_id, start_dt, end_dt, descr)
             if not ok:
                 return jsonify({"answer": "Não consegui salvar o evento agora. Tente novamente."}), 500
 
@@ -406,16 +407,19 @@ def chat_local():
         return jsonify({"answer": clamp(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)})
 
     answer = ask_llm_with_deadline(
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"[BASE DE CONHECIMENTO]\n{KNOWLEDGE_TEXT}\n\n"
-                           f"[PERGUNTA]\n{question}\n\n"
-                           "Responda SOMENTE se encontrar na base; caso contrário, escreva exatamente CONHECIMENTO_INSUFICIENTE.",
-            },
-        ]
-    )
+    [
+        {"role": "system", "content": SYSTEM_PROMPT.strip()},
+        {
+            "role": "user",
+            "content": (
+                "Com base estrita no seguinte manual interno, responda de forma objetiva e curta:\n\n"
+                f"{KNOWLEDGE_TEXT}\n\n"
+                f"Pergunta: {question}\n\n"
+                "Se a resposta não estiver claramente no texto, escreva apenas: CONHECIMENTO_INSUFICIENTE."
+            ),
+        },
+    ]
+)
     if not answer or "conhecimento_insuficiente" in _norm(answer):
         return jsonify({"answer": clamp(DONT_KNOW_YET_MSG)})
 

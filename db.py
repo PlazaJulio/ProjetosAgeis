@@ -138,9 +138,11 @@ def add_event(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO agenda (user_id, starts_at, ends_at, descricao) "
-                "VALUES (%s, %s, %s, %s)",
-                (user_id, s, e, descricao),
+                """
+                INSERT INTO agenda (user_id, starts_at, ends_at, descricao, created_by_user_id)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (user_id, s, e, descricao, user_id),
             )
             return int(cur.lastrowid or 0)
     finally:
