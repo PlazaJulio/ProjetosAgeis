@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Onboardly • Assistente</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <strong>Onboardly</strong>
+        <small class="env">local</small>
+      </div>
+      <div id="status" class="status badge">checando base…</div>
+    </header>
+
+    <main id="chat" class="chat">
+      <div class="msg bot">
+        <div class="bubble">
+          Olá! Sou o assistente interno. Pergunte sobre onboarding, setores, benefícios e processos.
+        </div>
+      </div>
+    </main>
+
+    <footer class="composer">
+      <!-- IMPORTANTE: button type="button" para não submeter o form -->
+      <form id="chat-form" autocomplete="off">
+        <textarea id="input" rows="1" placeholder="Digite sua mensagem..."></textarea>
+        <button id="send" type="button" aria-label="Enviar">
+          Enviar
+        </button>
+      </form>
+    </footer>
+  </div>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>

@@ -1,4 +1,5 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
+from flask_cors import CORS
 from config import PORT, DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 from pdf_ingest import load_knowledge_text
 from llm import chat
@@ -9,6 +10,7 @@ import traceback
 import unicodedata
 import json
 import time
+import os
 
 # ---------- Base (PDF -> texto) ----------
 RAW_KNOWLEDGE_TEXT = load_knowledge_text()
@@ -25,7 +27,17 @@ BASE_IS_EMPTY = (len(KNOWLEDGE_TEXT.strip()) == 0)
 with open("./prompts/system_prompt.txt", "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
-app = Flask(__name__)
+# ---------- App / CORS ----------
+app = Flask(__name__, static_folder="static", static_url_path="/static")
+CORS(app, resources={
+    r"/auth/*": {"origins": "*"},
+    r"/chat": {"origins": "*"},
+    r"/webhook/*": {"origins": "*"}
+})
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGIN_DIR = os.path.join(BASE_DIR, "static", "login")
+AGENT_DIR = os.path.join(BASE_DIR, "static", "agent")
 
 # ---------- Helpers ----------
 def clamp(s: str, max_chars: int = 1500) -> str:
@@ -36,7 +48,6 @@ def xml_escape(s: str) -> str:
     return html.escape(s or "", quote=True)
 
 def twiml_text(text: str) -> Response:
-    """Gera TwiML com header correto e texto escapado/limitado."""
     safe = xml_escape(clamp(text))
     xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
     resp = Response(xml)
@@ -51,7 +62,6 @@ def _norm(s: str) -> str:
     return s.lower()
 
 def ask_llm_with_deadline(messages, deadline_sec: int = 10):
-    """Chama o LLM e devolve None se passar do prazo ou der erro."""
     start = time.time()
     try:
         ans = chat(messages)
@@ -69,19 +79,15 @@ NOT_REGISTERED_MSG = (
     "Sou um assistente interno e atendo apenas assuntos da empresa. "
     "Não encontrei seu cadastro para este número. Por favor, peça habilitação ao RH com seu nome completo e e-mail corporativo."
 )
-
-# Fora de contexto: sem pergunta de confirmação e sem follow-up
 OUT_OF_SCOPE_MSG = (
     "Sou um assistente interno e só consigo ajudar com informações da empresa (onboarding, setores, processos e contatos)."
 )
-
-# Em contexto mas sem resposta: pergunta confirmação e ativa follow-up
 DONT_KNOW_YET_MSG = (
     "Essa pergunta está no contexto da empresa, mas ainda não tenho essa resposta no manual. "
     "Vamos aprimorar os conhecimentos com essa dúvida. Sua dúvida foi atendida? (responda 'não' para receber o contato do responsável)"
 )
 
-# ---------- Pequena memória de confirmação por número ----------
+# ---------- Pequena memória de confirmação ----------
 STATE = {}  # { from_num: {"awaiting": True, "role_like": str|None, "ts": float} }
 
 def set_pending(from_num: str, role_like: str | None):
@@ -169,8 +175,6 @@ ROLE_SYNONYMS = [
     ("tecnologia", "Tecnologia"),
 ]
 CONTACT_TRIGGERS = tuple(_norm(x) for x in ["contato", "contatos", "responsável", "responsavel"])
-
-# Gatilhos mais “humanos” de contato (variações)
 CONTACT_SEM_TRIGGERS = tuple(_norm(x) for x in [
     "contato", "contatos", "responsavel", "responsável",
     "falar com", "com quem falar", "quem cuida", "quem posta", "quem é o responsável",
@@ -183,26 +187,16 @@ def looks_like_contact_request(text: str) -> bool:
 
 def detect_contact_intent(question: str):
     q = _norm(question)
-
     if not any(t in q for t in CONTACT_TRIGGERS):
         return None
-
     if any(x in q for x in ("todos", "todas", "lista", "listar")):
-        intent = {"type": "all"}
-        print(">> CONTACT_INTENT(DET):", intent)
-        return intent
-
+        return {"type": "all"}
     for key_norm, like in ROLE_SYNONYMS:
         if key_norm in q:
-            intent = {"type": "role", "like": like}
-            print(">> CONTACT_INTENT(DET):", intent, "| MATCHED_KEY:", key_norm)
-            return intent
+            return {"type": "role", "like": like}
+    return {"type": "unknown"}
 
-    intent = {"type": "unknown"}
-    print(">> CONTACT_INTENT(DET):", intent)
-    return intent
-
-# ---------- Classificador semântico de contato ----------
+# ---------- Classificadores ----------
 VALID_CONTACT_ROLES = {
     "Administrador de Sistemas": "Administrador de Sistemas",
     "Tecnologia": "Tecnologia",
@@ -211,7 +205,6 @@ VALID_CONTACT_ROLES = {
     "Comercial": "Comercial",
     "Financeiro": "Financeiro",
 }
-
 CLASSIFIER_CONTACT_SYS = (
     "Você é um roteador curto que decide se a pergunta é um pedido de CONTATO interno.\n"
     "Se for, escolha exatamente UM dos papéis válidos:\n"
@@ -237,32 +230,21 @@ def semantic_contact_guess(question: str):
         msgs.append({"role": "user", "content": u})
         msgs.append({"role": "assistant", "content": a})
     msgs.append({"role": "user", "content": q})
-
     try:
         raw = chat(msgs) or ""
-    except Exception:
-        print("!! LLM ERROR (classifier-contact):\n", traceback.format_exc())
-        return None
-
-    try:
         data = json.loads(raw.strip())
     except Exception:
-        print(">> CLASSIFIER_CONTACT_RAW:", raw)
+        print(">> CLASSIFIER_CONTACT_RAW (parse falhou)")
         return None
-
     if not isinstance(data, dict):
         return None
-
     if bool(data.get("is_contact_request")):
         role = data.get("role")
         if isinstance(role, str) and role in VALID_CONTACT_ROLES:
-            intent = {"type": "role", "like": VALID_CONTACT_ROLES[role]}
-            print(">> CONTACT_INTENT(SEM):", intent)
-            return intent
+            return {"type": "role", "like": VALID_CONTACT_ROLES[role]}
         return {"type": "unknown"}
     return None
 
-# --- Classificador de ESCOPO (empresa x fora de contexto) ---
 CLASSIFIER_SCOPE_SYS = (
     "Classifique se a pergunta está no ESCOPO da empresa (onboarding, setores, processos, benefícios, sistemas internos, contatos) "
     "ou FORA DE CONTEXTO. Responda APENAS em JSON: "
@@ -281,37 +263,42 @@ def classify_scope(question: str):
     q = (question or "").strip()
     if not q:
         return {"in_scope": False, "role_hint": None}
-
     msgs = [{"role": "system", "content": CLASSIFIER_SCOPE_SYS}]
     for u, a in CLASSIFIER_SCOPE_FEWSHOTS:
         msgs.append({"role": "user", "content": u})
         msgs.append({"role": "assistant", "content": a})
     msgs.append({"role": "user", "content": q})
-
     try:
         raw = chat(msgs) or ""
-    except Exception:
-        print("!! LLM ERROR (classifier-scope):\n", traceback.format_exc())
-        return {"in_scope": False, "role_hint": None}
-
-    try:
         data = json.loads(raw.strip())
     except Exception:
-        print(">> CLASSIFIER_SCOPE_RAW:", raw)
+        print(">> CLASSIFIER_SCOPE_RAW (parse falhou)")
         return {"in_scope": False, "role_hint": None}
-
     role_hint = data.get("role_hint") if isinstance(data.get("role_hint"), str) else None
     role_hint = role_hint if role_hint else None
     return {"in_scope": bool(data.get("in_scope")), "role_hint": role_hint}
 
-# ---------- Rotas utilitárias ----------
+# ---------- Rotas de páginas (login/agent) ----------
+@app.get("/")
+def serve_login_root():
+    return send_from_directory(LOGIN_DIR, "index.html")
+
+@app.get("/login")
+def serve_login_alias():
+    return send_from_directory(LOGIN_DIR, "index.html")
+
+@app.get("/agent")
+def serve_agent():
+    return send_from_directory(AGENT_DIR, "index.html")
+
+# ---------- Utilitárias ----------
 @app.get("/healthz")
 def healthz():
     return jsonify({"status": "ok", "base_loaded": not BASE_IS_EMPTY, "base_chars": len(KNOWLEDGE_TEXT)}), 200
 
-@app.get("/")
-def root():
-    return jsonify({"ok": True, "routes": ["/", "/healthz", "/chat", "/webhook/whatsapp"]})
+@app.get("/routes")
+def routes():
+    return jsonify({"ok": True, "routes": ["/", "/login", "/agent", "/healthz", "/chat", "/webhook/whatsapp", "/auth/login"]})
 
 # ---------- Teste local (JSON) ----------
 @app.post("/chat")
@@ -321,7 +308,6 @@ def chat_local():
     if not question:
         return jsonify({"error": "body vazio"}), 400
 
-    # 1) Se for pedido de contato explícito (ou com gatilhos humanos), responde contatos
     if looks_like_contact_request(question):
         intent = detect_contact_intent(question)
         if intent and intent["type"] in ("all", "role"):
@@ -330,18 +316,14 @@ def chat_local():
         if sem:
             return jsonify({"answer": clamp(handle_contact_intent(sem))})
 
-    # 2) Fora de contexto?
     scope = classify_scope(question)
-    print(">> SCOPE:", scope)
     if not scope["in_scope"]:
         return jsonify({"answer": clamp(OUT_OF_SCOPE_MSG)})
 
-    # 3) Base não carregada
     if BASE_IS_EMPTY:
         set_pending("local", scope.get("role_hint"))
         return jsonify({"answer": clamp(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)})
 
-    # 4) FAQ obrigatório (modelo deve retornar conteúdo da base ou CONHECIMENTO_INSUFICIENTE)
     answer = ask_llm_with_deadline([
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content":
@@ -353,8 +335,6 @@ def chat_local():
     if not answer or "conhecimento_insuficiente" in _norm(answer):
         set_pending("local", scope.get("role_hint"))
         return jsonify({"answer": clamp(DONT_KNOW_YET_MSG)})
-
-    print(">> FINAL ANSWER (local):", answer[:200], "..." if len(answer) > 200 else "")
     return jsonify({"answer": clamp(answer)})
 
 def handle_contact_intent(intent):
@@ -389,7 +369,7 @@ def whatsapp_webhook():
 
     if request.form:
         question = (request.form.get("Body") or "").strip()
-        from_num = request.form.get("From")  # 'whatsapp:+55...'
+        from_num = request.form.get("From")
     elif request.is_json:
         data = request.get_json(silent=True) or {}
         question = (data.get("Body") or data.get("body") or "").strip()
@@ -398,51 +378,34 @@ def whatsapp_webhook():
     if not question:
         return twiml_text("")
 
-    print(">> FROM:", from_num)
-    print(">> QUESTION:", question)
-
-    # fluxo de confirmação: se usuário respondeu "não"
     pending = get_pending(from_num)
     if pending and is_negative_answer(question):
         role_like = pending.get("role_like") or "Recursos Humanos"
         contacts = fetch_contacts_by_role_like(role_like, limit=10)
         msg = f"Aqui estão os contatos — {role_like}:\n" + format_contacts(contacts)
         pop_pending(from_num)
-        print(">> FINAL ANSWER (contatos follow-up):", msg[:200], "..." if len(msg) > 200 else "")
         return twiml_text(msg)
 
-    # usuário não cadastrado
     user_profile = get_user_by_whatsapp(from_num)
-    print(">> PROFILE:", user_profile)
     if user_profile is None:
         return twiml_text(NOT_REGISTERED_MSG)
 
-    # CONTATOS: só se o texto parecer de contato (gatilhos humanos)
     if looks_like_contact_request(question):
         intent = detect_contact_intent(question)
         if intent and intent["type"] in ("all", "role"):
-            msg = handle_contact_intent(intent)
-            print(">> FINAL ANSWER (contatos det):", msg[:200], "..." if len(msg) > 200 else "")
-            return twiml_text(msg)
+            return twiml_text(handle_contact_intent(intent))
         sem = semantic_contact_guess(question)
         if sem:
-            msg = handle_contact_intent(sem)
-            print(">> FINAL ANSWER (contatos sem):", msg[:200], "..." if len(msg) > 200 else "")
-            return twiml_text(msg)
+            return twiml_text(handle_contact_intent(sem))
 
-    # SCOPE: prioriza FAQ / conteúdo
     scope = classify_scope(question)
-    print(">> SCOPE:", scope)
     if not scope["in_scope"]:
-        # fora de contexto -> sem follow-up
         return twiml_text(OUT_OF_SCOPE_MSG)
 
-    # Base não carregada
     if BASE_IS_EMPTY:
         set_pending(from_num, scope.get("role_hint"))
         return twiml_text(FALLBACK_NO_BASE + " " + DONT_KNOW_YET_MSG)
 
-    # FAQ: obriga usar somente a base; se não encontrar, ativa follow-up
     answer = ask_llm_with_deadline([
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content":
@@ -454,11 +417,59 @@ def whatsapp_webhook():
     ])
     if not answer or "conhecimento_insuficiente" in _norm(answer):
         set_pending(from_num, scope.get("role_hint"))
-        print(">> FINAL ANSWER (fallback):", DONT_KNOW_YET_MSG)
         return twiml_text(DONT_KNOW_YET_MSG)
-
-    print(">> FINAL ANSWER:", answer[:200], "..." if len(answer) > 200 else "")
     return twiml_text(answer)
+
+# ---------- ROTA DE LOGIN SIMPLES ----------
+@app.post("/auth/login")
+def login():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip()
+    senha = (data.get("senha") or "").strip()
+
+    if not email or not senha:
+        return jsonify({"success": False, "message": "Informe email e senha."}), 400
+
+    try:
+        conn = pymysql.connect(
+            host=DB_HOST,
+            port=int(DB_PORT or 3306),
+            user=DB_USER,
+            password=DB_PASSWORD or "",
+            database=DB_NAME,
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, nome, email, telefone, ativo, role_id "
+                "FROM users WHERE email=%s AND senha=%s LIMIT 1",
+                (email, senha),
+            )
+            user = cur.fetchone()
+    except Exception as e:
+        print("!! DB ERROR /auth/login:", e)
+        return jsonify({"success": False, "message": "Erro interno no servidor."}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if not user:
+        return jsonify({"success": False, "message": "E-mail ou senha inválidos."}), 401
+    if not user.get("ativo"):
+        return jsonify({"success": False, "message": "Usuário inativo."}), 403
+
+    return jsonify({
+        "success": True,
+        "user": {
+            "id": user["id"],
+            "nome": user["nome"],
+            "email": user["email"],
+            "role_id": user["role_id"]
+        }
+    }), 200
 
 # ---------- Start ----------
 if __name__ == "__main__":

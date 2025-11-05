@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login • Onboardly</title>
+
+  <!-- CSS com caminho absoluto -->
+  <link rel="stylesheet" href="/static/login/styles.css" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+</head>
+<body>
+  <div class="bg"></div>
+
+  <main class="container">
+    <section class="brand">
+      <div class="logo">◎</div>
+      <h1>Onboardly</h1>
+      <p class="muted">Acesso ao painel interno</p>
+    </section>
+
+    <section class="card" role="region" aria-labelledby="title-login">
+      <h2 id="title-login">Entrar</h2>
+
+      <form id="loginForm" novalidate>
+        <div class="field">
+          <label for="email">E-mail</label>
+          <input id="email" name="email" type="email" inputmode="email"
+            autocomplete="email" placeholder="voce@empresa.com" required />
+          <small class="error" id="emailError" aria-live="polite"></small>
+        </div>
+
+        <div class="field">
+          <label for="password">Senha</label>
+          <div class="password-wrap">
+            <input id="password" name="password" type="password"
+              autocomplete="current-password" placeholder="••••••••" required
+              minlength="6" />
+            <button class="toggle" type="button" aria-label="Mostrar senha"
+              id="togglePassword">👁</button>
+          </div>
+          <small class="error" id="passwordError" aria-live="polite"></small>
+        </div>
+
+        <div class="row between">
+          <label class="checkbox">
+            <input type="checkbox" id="remember" />
+            <span>Lembrar de mim</span>
+          </label>
+
+          <a href="#" class="link" id="forgotLink">Esqueci minha senha</a>
+        </div>
+
+        <button id="submitBtn" class="btn primary" type="submit">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="btn-text">Entrar</span>
+        </button>
+
+        <div class="divider">
+          <span>ou</span>
+        </div>
+
+        <button class="btn ghost" type="button" id="loginSso">
+          Entrar com a conta da empresa
+        </button>
+      </form>
+
+      <div class="footer">
+        <button class="mode" id="modeToggle" type="button"
+          aria-label="Alternar tema">🌙</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- JS com caminho absoluto -->
+  <script src="/static/login/app.js"></script>
+</body>
+</html>
